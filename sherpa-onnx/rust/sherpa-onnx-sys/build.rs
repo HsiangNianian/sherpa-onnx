@@ -46,6 +46,7 @@ fn main() {
 fn try_main() -> Result<(), DynError> {
     println!("cargo:rerun-if-env-changed=SHERPA_ONNX_LIB_DIR");
     println!("cargo:rerun-if-env-changed=SHERPA_ONNX_ARCHIVE_DIR");
+    println!("cargo:rerun-if-env-changed=SHERPA_ONNX_RELEASE_URL");
     println!("cargo:rerun-if-env-changed=DOCS_RS");
 
     if env::var_os("DOCS_RS").is_some() {
@@ -130,6 +131,13 @@ fn resolve_lib_dir(
 
 /// Return the download URL for a given archive.
 fn download_url(archive_name: &str) -> String {
+    // A fork can publish its own prebuilt libraries: SHERPA_ONNX_RELEASE_URL is
+    // the release they are under, e.g.
+    // https://github.com/<owner>/sherpa-onnx/releases/download/<tag>
+    if let Some(base) = env::var_os("SHERPA_ONNX_RELEASE_URL") {
+        let base = base.to_string_lossy();
+        return format!("{}/{archive_name}", base.trim_end_matches('/'));
+    }
     // iOS xcframework archives live under the "xcframework" release tag;
     // everything else is under the versioned release tag.
     if archive_name.ends_with(".xcframework.zip") {
@@ -152,7 +160,17 @@ fn download_prebuilt_libs(
         .unwrap_or(&archive_name);
 
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
-    let cache_root = target_dir_from_out_dir(&out_dir)?.join("sherpa-onnx-prebuilt");
+    let mut cache_root = target_dir_from_out_dir(&out_dir)?.join("sherpa-onnx-prebuilt");
+    // A fork's libraries have the same archive names as the official ones; keep
+    // each release in its own folder so neither is mistaken for the other.
+    if let Some(base) = env::var_os("SHERPA_ONNX_RELEASE_URL") {
+        let folder: String = base
+            .to_string_lossy()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+            .collect();
+        cache_root = cache_root.join(folder);
+    }
     let extracted_dir = cache_root.join(archive_stem);
 
     // For iOS simulator builds, use a separate lib directory to avoid

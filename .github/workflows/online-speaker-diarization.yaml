@@ -4,12 +4,18 @@ name: online-speaker-diarization
 # offline Sortformer support from #4032: export the model, build the static
 # libraries the Rust crate links, and check the streaming results against
 # the offline ones.
+#
+# A tag boardcast-* also publishes them as a release of this fork, which
+# boardcast's builds download through SHERPA_ONNX_RELEASE_URL, so its own
+# releases do not build sherpa-onnx.
 
 on:
   workflow_dispatch:
   push:
     branches:
       - online-speaker-diarization
+    tags:
+      - 'boardcast-*'
 
 permissions:
   contents: read
@@ -63,12 +69,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The images boardcast's release builds on, so the libraries link there:
+        # Ubuntu 22.04's older glibc, the same MSVC, and both kinds of Mac.
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             archive: linux-x64-static-lib
           - os: macos-15
             archive: osx-arm64-static-lib
-          - os: windows-latest
+          - os: macos-15-intel
+            archive: osx-x64-static-lib
+          - os: windows-2022
             archive: win-x64-static-MT-Release-lib
     steps:
       - uses: actions/checkout@v4
@@ -96,7 +106,7 @@ jobs:
             cmake -A x64 -D SHERPA_ONNX_ENABLE_BINARY=OFF -D SHERPA_ONNX_USE_STATIC_CRT=ON $common ..
           else
             # The command-line tools are built on Linux, for the test job
-            cmake -D CMAKE_BUILD_TYPE=Release -D SHERPA_ONNX_ENABLE_BINARY=${{ matrix.os == 'ubuntu-latest' && 'ON' || 'OFF' }} $common ..
+            cmake -D CMAKE_BUILD_TYPE=Release -D SHERPA_ONNX_ENABLE_BINARY=${{ matrix.os == 'ubuntu-22.04' && 'ON' || 'OFF' }} $common ..
           fi
 
       - name: Build
@@ -131,7 +141,7 @@ jobs:
           path: sherpa-onnx-v*-${{ matrix.archive }}.tar.bz2
 
       - uses: actions/upload-artifact@v4
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-22.04'
         with:
           name: linux-tools
           path: |
@@ -169,3 +179,31 @@ jobs:
                 --chunk-length=$1 --chunk-right-context=$2 --compare-offline=1 $wav
             done
           done
+
+  release:
+    name: publish the release
+    if: startsWith(github.ref, 'refs/tags/boardcast-')
+    needs: [export, build, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir release
+          cp artifacts/static-lib-*/*.tar.bz2 release/
+          tar cjf release/sherpa-onnx-nemotron-3-diarization.tar.bz2 \
+            -C artifacts sherpa-onnx-nemotron-3-diarization
+          (cd release && sha256sum *.tar.bz2 > SHA256SUMS)
+          ls -lh release
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Static libraries for the Rust crate (Linux x64, macOS arm64 and x64, Windows x64) and Nemotron-3-Diarization (FP32 and INT8, OpenMDW-1.1), built from ${GITHUB_SHA::8}. Set SHERPA_ONNX_RELEASE_URL=https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME to build against them."
