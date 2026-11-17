@@ -70,7 +70,8 @@ jobs:
       fail-fast: false
       matrix:
         # The images boardcast's release builds on, so the libraries link there:
-        # Ubuntu 22.04's older glibc, the same MSVC, and both kinds of Mac.
+        # the same MSVC and both kinds of Mac. Linux builds in manylinux2014
+        # (glibc 2.17) below, and also gives the command-line tools for the test.
         include:
           - os: ubuntu-22.04
             archive: linux-x64-static-lib
@@ -94,7 +95,46 @@ jobs:
         with:
           arch: x64
 
+      # Linux is built the way upstream builds its releases: in manylinux2014
+      # with devtoolset-11, whose libstdc++ uses the old std::string ABI like
+      # the prebuilt static ONNX Runtime. Built natively on Ubuntu, the two
+      # ABIs meet in std::regex and the app aborts with "free(): invalid
+      # pointer" as soon as ONNX Runtime starts.
+      - name: Build in manylinux2014
+        if: startsWith(matrix.os, 'ubuntu')
+        shell: bash
+        run: |
+          docker run --rm \
+            --volume "$PWD":/work \
+            quay.io/pypa/manylinux2014_x86_64 \
+            bash -c '
+              set -ex
+              echo "multilib_policy=best" >> /etc/yum.conf
+              echo "skip_missing_names_on_install=False" >> /etc/yum.conf
+              sed -i "/^override_install_langs=/d" /etc/yum.conf
+              yum -y install yum-utils
+              yum-config-manager --enable extras
+              yum -y install centos-release-scl-rh
+              yum -y install devtoolset-11-binutils devtoolset-11-gcc devtoolset-11-gcc-c++
+              source /opt/rh/devtoolset-11/enable
+              gcc --version
+              cd /work
+              mkdir build
+              cd build
+              cmake -D CMAKE_BUILD_TYPE=Release -D BUILD_SHARED_LIBS=OFF \
+                -D SHERPA_ONNX_ENABLE_PORTAUDIO=OFF -D SHERPA_ONNX_ENABLE_WEBSOCKET=OFF \
+                -D SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION=ON -D SHERPA_ONNX_ENABLE_BINARY=ON \
+                -D CMAKE_INSTALL_PREFIX=./install ..
+              make -j4
+              make install
+            '
+          sudo chown -R "$(id -u):$(id -g)" build
+          ls -lh build/install/lib
+          echo "new-ABI symbols (must be 0): $(nm -C build/install/lib/libsherpa-onnx-core.a | grep -c __cxx11 || true)"
+          test "$(nm -C build/install/lib/libsherpa-onnx-core.a | grep -c __cxx11 || true)" = 0
+
       - name: Configure
+        if: ${{ !startsWith(matrix.os, 'ubuntu') }}
         shell: bash
         run: |
           export CMAKE_CXX_COMPILER_LAUNCHER=ccache
@@ -105,11 +145,11 @@ jobs:
           if [[ "${{ matrix.os }}" == windows-* ]]; then
             cmake -A x64 -D SHERPA_ONNX_ENABLE_BINARY=OFF -D SHERPA_ONNX_USE_STATIC_CRT=ON $common ..
           else
-            # The command-line tools are built on Linux, for the test job
-            cmake -D CMAKE_BUILD_TYPE=Release -D SHERPA_ONNX_ENABLE_BINARY=${{ matrix.os == 'ubuntu-22.04' && 'ON' || 'OFF' }} $common ..
+            cmake -D CMAKE_BUILD_TYPE=Release -D SHERPA_ONNX_ENABLE_BINARY=OFF $common ..
           fi
 
       - name: Build
+        if: ${{ !startsWith(matrix.os, 'ubuntu') }}
         shell: bash
         run: |
           export CMAKE_CXX_COMPILER_LAUNCHER=ccache
