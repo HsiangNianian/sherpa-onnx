@@ -49,6 +49,7 @@
 
 #if SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION == 1
 #include "sherpa-onnx/csrc/offline-speaker-diarization.h"
+#include "sherpa-onnx/csrc/online-speaker-diarization-sortformer.h"
 #endif
 
 #define SHERPA_ONNX_OR(x, y) (x ? x : y)
@@ -3539,6 +3540,117 @@ SherpaOnnxOfflineSpeakerDiarizationProcessWithCallbackNoArg(
 
   return ans;
 }
+
+struct SherpaOnnxOnlineSpeakerDiarization {
+  std::unique_ptr<sherpa_onnx::OnlineSpeakerDiarizationSortformer> impl;
+};
+
+const SherpaOnnxOnlineSpeakerDiarization *
+SherpaOnnxCreateOnlineSpeakerDiarization(
+    const SherpaOnnxOnlineSpeakerDiarizationConfig *config) {
+  if (!config) {
+    SHERPA_ONNX_LOGE("config is NULL");
+    return nullptr;
+  }
+
+  sherpa_onnx::OnlineSpeakerDiarizationSortformerConfig c;
+  c.segmentation.sortformer.model = SHERPA_ONNX_OR(config->model, "");
+  c.segmentation.num_threads = GetNumThreads(config->num_threads);
+  c.segmentation.debug = config->debug;
+  c.segmentation.provider = SHERPA_ONNX_OR(config->provider, "cpu");
+  if (c.segmentation.provider.empty()) {
+    c.segmentation.provider = "cpu";
+  }
+  c.chunk_length = config->chunk_length;
+  c.chunk_right_context = config->chunk_right_context;
+  c.fifo_length = config->fifo_length;
+  c.speaker_cache_update_period = config->speaker_cache_update_period;
+
+  if (c.segmentation.debug) {
+    SHERPA_ONNX_LOGE("%s\n", c.ToString().c_str());
+  }
+
+  if (!c.Validate()) {
+    SHERPA_ONNX_LOGE("Errors in config");
+    return nullptr;
+  }
+
+  try {
+    auto sd = new SherpaOnnxOnlineSpeakerDiarization;
+    sd->impl =
+        std::make_unique<sherpa_onnx::OnlineSpeakerDiarizationSortformer>(c);
+    return sd;
+  } catch (const std::exception &e) {
+    SHERPA_ONNX_LOGE("Failed to create online speaker diarization: %s",
+                     e.what());
+    return nullptr;
+  }
+}
+
+void SherpaOnnxDestroyOnlineSpeakerDiarization(
+    const SherpaOnnxOnlineSpeakerDiarization *sd) {
+  delete sd;
+}
+
+int32_t SherpaOnnxOnlineSpeakerDiarizationGetSampleRate(
+    const SherpaOnnxOnlineSpeakerDiarization *sd) {
+  return sd->impl->SampleRate();
+}
+
+int32_t SherpaOnnxOnlineSpeakerDiarizationGetNumSpeakers(
+    const SherpaOnnxOnlineSpeakerDiarization *sd) {
+  return sd->impl->NumSpeakers();
+}
+
+float SherpaOnnxOnlineSpeakerDiarizationGetFrameShift(
+    const SherpaOnnxOnlineSpeakerDiarization *sd) {
+  return sd->impl->FrameShift();
+}
+
+float SherpaOnnxOnlineSpeakerDiarizationGetLatency(
+    const SherpaOnnxOnlineSpeakerDiarization *sd) {
+  return sd->impl->Latency();
+}
+
+void SherpaOnnxOnlineSpeakerDiarizationAcceptWaveform(
+    const SherpaOnnxOnlineSpeakerDiarization *sd, const float *samples,
+    int32_t n) {
+  sd->impl->AcceptWaveform(samples, n);
+}
+
+void SherpaOnnxOnlineSpeakerDiarizationInputFinished(
+    const SherpaOnnxOnlineSpeakerDiarization *sd) {
+  sd->impl->InputFinished();
+}
+
+void SherpaOnnxOnlineSpeakerDiarizationReset(
+    const SherpaOnnxOnlineSpeakerDiarization *sd) {
+  sd->impl->Reset();
+}
+
+const SherpaOnnxOnlineSpeakerDiarizationFrames *
+SherpaOnnxOnlineSpeakerDiarizationGetFrames(
+    const SherpaOnnxOnlineSpeakerDiarization *sd) {
+  int32_t first = 0;
+  std::vector<float> probs = sd->impl->GetFrames(&first);
+  int32_t num_speakers = sd->impl->NumSpeakers();
+
+  auto ans = new SherpaOnnxOnlineSpeakerDiarizationFrames;
+  ans->first_frame = first;
+  ans->num_speakers = num_speakers;
+  ans->num_frames = static_cast<int32_t>(probs.size()) / num_speakers;
+  float *p = new float[probs.size() > 0 ? probs.size() : 1];
+  std::copy(probs.begin(), probs.end(), p);
+  ans->probs = p;
+  return ans;
+}
+
+void SherpaOnnxOnlineSpeakerDiarizationDestroyFrames(
+    const SherpaOnnxOnlineSpeakerDiarizationFrames *frames) {
+  if (!frames) return;
+  delete[] frames->probs;
+  delete frames;
+}
 #else
 
 const SherpaOnnxOfflineSpeakerDiarization *
@@ -3631,6 +3743,56 @@ void SherpaOnnxOfflineSpeakerDiarizationDestroyResult(
   SHERPA_ONNX_LOGE(
       "Speaker diarization is not enabled. Please rebuild sherpa-onnx");
 }
+
+const SherpaOnnxOnlineSpeakerDiarization *
+SherpaOnnxCreateOnlineSpeakerDiarization(
+    const SherpaOnnxOnlineSpeakerDiarizationConfig *config) {
+  SHERPA_ONNX_LOGE(
+      "Speaker diarization is not enabled. Please rebuild sherpa-onnx");
+  return nullptr;
+}
+
+void SherpaOnnxDestroyOnlineSpeakerDiarization(
+    const SherpaOnnxOnlineSpeakerDiarization *sd) {}
+
+int32_t SherpaOnnxOnlineSpeakerDiarizationGetSampleRate(
+    const SherpaOnnxOnlineSpeakerDiarization *sd) {
+  return 0;
+}
+
+int32_t SherpaOnnxOnlineSpeakerDiarizationGetNumSpeakers(
+    const SherpaOnnxOnlineSpeakerDiarization *sd) {
+  return 0;
+}
+
+float SherpaOnnxOnlineSpeakerDiarizationGetFrameShift(
+    const SherpaOnnxOnlineSpeakerDiarization *sd) {
+  return 0;
+}
+
+float SherpaOnnxOnlineSpeakerDiarizationGetLatency(
+    const SherpaOnnxOnlineSpeakerDiarization *sd) {
+  return 0;
+}
+
+void SherpaOnnxOnlineSpeakerDiarizationAcceptWaveform(
+    const SherpaOnnxOnlineSpeakerDiarization *sd, const float *samples,
+    int32_t n) {}
+
+void SherpaOnnxOnlineSpeakerDiarizationInputFinished(
+    const SherpaOnnxOnlineSpeakerDiarization *sd) {}
+
+void SherpaOnnxOnlineSpeakerDiarizationReset(
+    const SherpaOnnxOnlineSpeakerDiarization *sd) {}
+
+const SherpaOnnxOnlineSpeakerDiarizationFrames *
+SherpaOnnxOnlineSpeakerDiarizationGetFrames(
+    const SherpaOnnxOnlineSpeakerDiarization *sd) {
+  return nullptr;
+}
+
+void SherpaOnnxOnlineSpeakerDiarizationDestroyFrames(
+    const SherpaOnnxOnlineSpeakerDiarizationFrames *frames) {}
 
 #endif
 

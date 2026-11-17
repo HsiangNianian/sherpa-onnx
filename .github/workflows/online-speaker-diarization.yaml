@@ -1,0 +1,171 @@
+name: online-speaker-diarization
+
+# Streaming speaker diarization with Nemotron-3-Diarization, on top of the
+# offline Sortformer support from #4032: export the model, build the static
+# libraries the Rust crate links, and check the streaming results against
+# the offline ones.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - online-speaker-diarization
+
+permissions:
+  contents: read
+
+concurrency:
+  group: online-speaker-diarization-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  export:
+    name: export Nemotron-3-Diarization
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r scripts/nemo/nemotron-3-diarization/requirements.txt
+
+      - name: Export
+        shell: bash
+        run: |
+          d=sherpa-onnx-nemotron-3-diarization
+          src="$PWD/$d"
+          mkdir -p "$src/test_wavs"
+          pushd scripts/nemo/nemotron-3-diarization
+          ./run.sh
+          cp ./*.onnx "$src/"
+          cp ./0-four-speakers-zh.wav "$src/test_wavs/"
+          popd
+          curl -fSL https://raw.githubusercontent.com/OpenMDW/OpenMDW/b26b32b34ad2edcc29a7707abb68dcfb25a538c1/1.1/LICENSE.OpenMDW-1.1 -o "$src/LICENSE"
+          curl -fSL https://huggingface.co/nvidia/Nemotron-3-Diarization/resolve/f667ed73aee57d40cc39428eb768b4fd87a0a29e/README.md -o "$src/MODEL_CARD.md"
+          ls -lh "$src"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sherpa-onnx-nemotron-3-diarization
+          path: sherpa-onnx-nemotron-3-diarization
+
+  build:
+    name: static libs ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            archive: linux-x64-static-lib
+          - os: macos-latest
+            archive: osx-arm64-static-lib
+          - os: windows-latest
+            archive: win-x64-static-MT-Release-lib
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.os }}-online-speaker-diarization
+
+      - name: Set up MSVC
+        if: startsWith(matrix.os, 'windows')
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        shell: bash
+        run: |
+          export CMAKE_CXX_COMPILER_LAUNCHER=ccache
+          export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+          mkdir build
+          cd build
+          common="-D BUILD_SHARED_LIBS=OFF -D SHERPA_ONNX_ENABLE_PORTAUDIO=OFF -D SHERPA_ONNX_ENABLE_WEBSOCKET=OFF -D SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION=ON -D CMAKE_INSTALL_PREFIX=./install"
+          if [[ "${{ matrix.os }}" == windows-* ]]; then
+            cmake -A x64 -D SHERPA_ONNX_ENABLE_BINARY=OFF -D SHERPA_ONNX_USE_STATIC_CRT=ON $common ..
+          else
+            # The command-line tools are built on Linux, for the test job
+            cmake -D CMAKE_BUILD_TYPE=Release -D SHERPA_ONNX_ENABLE_BINARY=${{ matrix.os == 'ubuntu-latest' && 'ON' || 'OFF' }} $common ..
+          fi
+
+      - name: Build
+        shell: bash
+        run: |
+          export CMAKE_CXX_COMPILER_LAUNCHER=ccache
+          export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+          cd build
+          if [[ "${{ matrix.os }}" == windows-* ]]; then
+            cmake --build . --config Release -- -m:2
+            cmake --build . --config Release --target install -- -m:2
+          else
+            make -j4
+            make install
+          fi
+          ls -lh install/lib
+
+      - name: Package for the Rust crate
+        shell: bash
+        run: |
+          v=$(grep "SHERPA_ONNX_VERSION" ./CMakeLists.txt | cut -d " " -f 2 | cut -d "\"" -f 2)
+          d=sherpa-onnx-v$v-${{ matrix.archive }}
+          mkdir -p "$d"
+          cp -r build/install/lib "$d/"
+          tar cjf "$d.tar.bz2" "$d"
+          ls -lh "$d.tar.bz2"
+          du -sh "$d/lib"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: static-lib-${{ matrix.archive }}
+          path: sherpa-onnx-v*-${{ matrix.archive }}.tar.bz2
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          name: linux-tools
+          path: |
+            build/bin/sherpa-onnx-online-speaker-diarization
+            build/bin/sherpa-onnx-offline-speaker-diarization
+
+  test:
+    name: streaming against offline
+    needs: [export, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sherpa-onnx-nemotron-3-diarization
+          path: model
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-tools
+          path: bin
+
+      - name: Compare
+        shell: bash
+        run: |
+          chmod +x bin/*
+          wav=model/test_wavs/0-four-speakers-zh.wav
+          for m in model.onnx model.int8.onnx; do
+            echo "== $m, offline geometry: must equal the offline result"
+            ./bin/sherpa-onnx-online-speaker-diarization --sortformer-model=model/$m --compare-offline=1 $wav
+            for cl in "9 4" "6 2" "3 1"; do
+              set -- $cl
+              echo "== $m, chunk $1, right context $2"
+              ./bin/sherpa-onnx-online-speaker-diarization --sortformer-model=model/$m \
+                --chunk-length=$1 --chunk-right-context=$2 --compare-offline=1 $wav
+            done
+          done

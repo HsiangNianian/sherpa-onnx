@@ -32,6 +32,12 @@ struct OfflineSpeakerSegmentationSortformerModelMetaData {
   int32_t chunk_length = 340;
   int32_t chunk_right_context = 40;
 
+  // NVIDIA's low-latency streaming geometry, in encoder frames, used by the
+  // online diarization when it is asked for short chunks. 0 if the model
+  // does not have it; the offline values in cache are then used.
+  int32_t streaming_fifo_length = 0;
+  int32_t streaming_speaker_cache_update_period = 0;
+
   // num_speakers, subsampling_factor, hidden_size, fifo_length, etc.
   SortformerSpeakerCacheConfig cache;
 };

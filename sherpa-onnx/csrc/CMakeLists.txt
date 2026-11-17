@@ -349,6 +349,7 @@ if(SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION)
     offline-speaker-segmentation-pyannote-model.cc
     offline-speaker-segmentation-sortformer-model-config.cc
     offline-speaker-segmentation-sortformer-model.cc
+    online-speaker-diarization-sortformer.cc
     sortformer-speaker-cache.cc
   )
 endif()
@@ -533,6 +534,7 @@ if(SHERPA_ONNX_ENABLE_BINARY)
 
   if(SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION)
     add_executable(sherpa-onnx-offline-speaker-diarization sherpa-onnx-offline-speaker-diarization.cc)
+    add_executable(sherpa-onnx-online-speaker-diarization sherpa-onnx-online-speaker-diarization.cc)
   endif()
 
   set(main_exes
@@ -563,6 +565,7 @@ if(SHERPA_ONNX_ENABLE_BINARY)
   if(SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION)
     list(APPEND main_exes
       sherpa-onnx-offline-speaker-diarization
+      sherpa-onnx-online-speaker-diarization
     )
   endif()
 

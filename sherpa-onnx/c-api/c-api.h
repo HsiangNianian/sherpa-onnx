@@ -4562,6 +4562,115 @@ SherpaOnnxOfflineSpeakerDiarizationProcessWithCallbackNoArg(
 SHERPA_ONNX_API void SherpaOnnxOfflineSpeakerDiarizationDestroyResult(
     const SherpaOnnxOfflineSpeakerDiarizationResult *r);
 
+/**
+ * @brief Configuration for streaming speaker diarization with a Sortformer
+ * model, e.g., Nemotron-3-Diarization.
+ *
+ * chunk_length and chunk_right_context are in encoder frames of 80 ms and
+ * set the latency. NVIDIA's low-latency settings are 9 and 4 (1.04 s), 6 and
+ * 2 (0.64 s), and 3 and 1 (0.32 s). Set chunk_length to 0 for the model's
+ * offline settings, which give the same result as offline diarization.
+ */
+typedef struct SherpaOnnxOnlineSpeakerDiarizationConfig {
+  /** Sortformer model filename. */
+  const char *model;
+  /** Number of inference threads. */
+  int32_t num_threads;
+  /** Non-zero to print debug information. */
+  int32_t debug;
+  /** Execution provider such as `"cpu"`. */
+  const char *provider;
+  /** Encoder frames emitted per step; 0 for the model's own. */
+  int32_t chunk_length;
+  /** Encoder frames of right context. */
+  int32_t chunk_right_context;
+  /** FIFO queue length; 0 for the model's own. */
+  int32_t fifo_length;
+  /** Speaker cache update period; 0 for the model's own. */
+  int32_t speaker_cache_update_period;
+} SherpaOnnxOnlineSpeakerDiarizationConfig;
+
+typedef struct SherpaOnnxOnlineSpeakerDiarization
+    SherpaOnnxOnlineSpeakerDiarization;
+
+/**
+ * @brief Speaker probabilities of the frames computed since the last call to
+ * SherpaOnnxOnlineSpeakerDiarizationGetFrames().
+ */
+typedef struct SherpaOnnxOnlineSpeakerDiarizationFrames {
+  /** Index of the first frame, counting from the start of the stream. */
+  int32_t first_frame;
+  /** Number of frames. */
+  int32_t num_frames;
+  /** Number of speaker slots, i.e., columns of probs. */
+  int32_t num_speakers;
+  /** Row-major (num_frames, num_speakers) activity probabilities. */
+  const float *probs;
+} SherpaOnnxOnlineSpeakerDiarizationFrames;
+
+/**
+ * @brief Create a streaming speaker diarizer.
+ *
+ * @return A new diarizer, or NULL on error. Free it with
+ *         SherpaOnnxDestroyOnlineSpeakerDiarization().
+ */
+SHERPA_ONNX_API const SherpaOnnxOnlineSpeakerDiarization *
+SherpaOnnxCreateOnlineSpeakerDiarization(
+    const SherpaOnnxOnlineSpeakerDiarizationConfig *config);
+
+/** @brief Destroy a streaming speaker diarizer. */
+SHERPA_ONNX_API void SherpaOnnxDestroyOnlineSpeakerDiarization(
+    const SherpaOnnxOnlineSpeakerDiarization *sd);
+
+/** @brief Sample rate the diarizer expects. */
+SHERPA_ONNX_API int32_t SherpaOnnxOnlineSpeakerDiarizationGetSampleRate(
+    const SherpaOnnxOnlineSpeakerDiarization *sd);
+
+/** @brief Number of speaker slots. */
+SHERPA_ONNX_API int32_t SherpaOnnxOnlineSpeakerDiarizationGetNumSpeakers(
+    const SherpaOnnxOnlineSpeakerDiarization *sd);
+
+/** @brief Duration of one output frame, in seconds. */
+SHERPA_ONNX_API float SherpaOnnxOnlineSpeakerDiarizationGetFrameShift(
+    const SherpaOnnxOnlineSpeakerDiarization *sd);
+
+/** @brief Seconds of audio after a frame needed before it is returned. */
+SHERPA_ONNX_API float SherpaOnnxOnlineSpeakerDiarizationGetLatency(
+    const SherpaOnnxOnlineSpeakerDiarization *sd);
+
+/**
+ * @brief Feed audio. Chunks are processed as soon as they are complete.
+ *
+ * @param samples Mono samples normalized to [-1, 1], at the sample rate
+ *                returned by SherpaOnnxOnlineSpeakerDiarizationGetSampleRate().
+ * @param n Number of samples.
+ */
+SHERPA_ONNX_API void SherpaOnnxOnlineSpeakerDiarizationAcceptWaveform(
+    const SherpaOnnxOnlineSpeakerDiarization *sd, const float *samples,
+    int32_t n);
+
+/** @brief No more audio: process the rest of the stream. */
+SHERPA_ONNX_API void SherpaOnnxOnlineSpeakerDiarizationInputFinished(
+    const SherpaOnnxOnlineSpeakerDiarization *sd);
+
+/** @brief Forget the stream; the next audio starts a new one. */
+SHERPA_ONNX_API void SherpaOnnxOnlineSpeakerDiarizationReset(
+    const SherpaOnnxOnlineSpeakerDiarization *sd);
+
+/**
+ * @brief Take the frames computed since the last call.
+ *
+ * @return Newly allocated frames, possibly with num_frames 0. Free them with
+ *         SherpaOnnxOnlineSpeakerDiarizationDestroyFrames().
+ */
+SHERPA_ONNX_API const SherpaOnnxOnlineSpeakerDiarizationFrames *
+SherpaOnnxOnlineSpeakerDiarizationGetFrames(
+    const SherpaOnnxOnlineSpeakerDiarization *sd);
+
+/** @brief Free frames returned by SherpaOnnxOnlineSpeakerDiarizationGetFrames(). */
+SHERPA_ONNX_API void SherpaOnnxOnlineSpeakerDiarizationDestroyFrames(
+    const SherpaOnnxOnlineSpeakerDiarizationFrames *frames);
+
 // =========================================================================
 // For offline speech enhancement
 // =========================================================================

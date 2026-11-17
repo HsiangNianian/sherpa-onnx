@@ -72,6 +72,16 @@ int32_t ReadIntMetaData(const Ort::ModelMetadata &meta_data, const char *key,
   return static_cast<int32_t>(parsed);
 }
 
+// Like ReadIntMetaData(), but `default_value` if the model does not have it.
+int32_t ReadOptionalIntMetaData(const Ort::ModelMetadata &meta_data,
+                                const char *key, OrtAllocator *allocator,
+                                int32_t default_value) {
+  if (LookupCustomModelMetaData(meta_data, key, allocator).empty()) {
+    return default_value;
+  }
+  return ReadIntMetaData(meta_data, key, allocator);
+}
+
 }  // namespace
 
 class OfflineSpeakerSegmentationSortformerModel::Impl {
@@ -193,6 +203,10 @@ class OfflineSpeakerSegmentationSortformerModel::Impl {
     m.chunk_length = ReadIntMetaData(meta_data, "chunk_length", allocator);
     m.chunk_right_context =
         ReadIntMetaData(meta_data, "chunk_right_context", allocator);
+    m.streaming_fifo_length = ReadOptionalIntMetaData(
+        meta_data, "streaming_fifo_length", allocator, 0);
+    m.streaming_speaker_cache_update_period = ReadOptionalIntMetaData(
+        meta_data, "streaming_speaker_cache_update_period", allocator, 0);
 
     auto &c = m.cache;
     c.num_speakers = ReadIntMetaData(meta_data, "num_speakers", allocator);
