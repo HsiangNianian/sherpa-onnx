@@ -241,7 +241,9 @@ jobs:
           cp artifacts/static-lib-*/*.tar.bz2 release/
           tar cjf release/sherpa-onnx-nemotron-3-diarization.tar.bz2 \
             -C artifacts sherpa-onnx-nemotron-3-diarization
-          (cd release && sha256sum *.tar.bz2 > SHA256SUMS)
+          # The INT8 model on its own too, for boardcast to fetch as one pinned file
+          cp artifacts/sherpa-onnx-nemotron-3-diarization/model.int8.onnx release/nemotron-3-diarization.int8.onnx
+          (cd release && sha256sum *.tar.bz2 *.onnx > SHA256SUMS)
           ls -lh release
           gh release create "$GITHUB_REF_NAME" release/* \
             --repo "$GITHUB_REPOSITORY" \
