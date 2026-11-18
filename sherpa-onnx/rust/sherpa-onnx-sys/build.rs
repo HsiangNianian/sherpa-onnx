@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::{collections::HashSet, ffi::OsString};
 
 use bzip2::read::BzDecoder;
+use sha2::{Digest, Sha256};
 use tar::Archive;
 
 const RELEASE_BASE_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download";
@@ -47,6 +48,7 @@ fn try_main() -> Result<(), DynError> {
     println!("cargo:rerun-if-env-changed=SHERPA_ONNX_LIB_DIR");
     println!("cargo:rerun-if-env-changed=SHERPA_ONNX_ARCHIVE_DIR");
     println!("cargo:rerun-if-env-changed=SHERPA_ONNX_RELEASE_URL");
+    println!("cargo:rerun-if-env-changed=SHERPA_ONNX_SHA256SUMS");
     println!("cargo:rerun-if-env-changed=DOCS_RS");
 
     if env::var_os("DOCS_RS").is_some() {
@@ -181,7 +183,16 @@ fn download_prebuilt_libs(
     let lib_dir_name = if is_ios_sim { "lib-sim" } else { "lib" };
     let lib_dir = extracted_dir.join(lib_dir_name);
 
-    if lib_dir.is_dir() {
+    // With SHERPA_ONNX_SHA256SUMS, the archive must match the hash pinned there,
+    // and a cached copy is reused only if it was extracted from that archive.
+    let expected = expected_sha256(&archive_name)?;
+    let marker = extracted_dir.join(".sha256");
+    let cache_ok = match &expected {
+        None => true,
+        Some(hash) => fs::read_to_string(&marker).is_ok_and(|m| m.trim() == hash),
+    };
+
+    if lib_dir.is_dir() && cache_ok {
         return Ok((lib_dir, archive_stem.to_string()));
     }
 
@@ -192,15 +203,15 @@ fn download_prebuilt_libs(
     let android_lib_dir_alt = cache_root.join("jniLibs").join(android_abi(target_arch));
     // Only Android uses jniLibs/<abi>: iOS aarch64 maps to the same `arm64-v8a` name and would
     // otherwise pick up a cached Android build's libraries.
-    if target_os == "android" && android_lib_dir.is_dir() {
+    if cache_ok && target_os == "android" && android_lib_dir.is_dir() {
         return Ok((android_lib_dir, archive_stem.to_string()));
     }
-    if target_os == "android" && android_lib_dir_alt.is_dir() {
+    if cache_ok && target_os == "android" && android_lib_dir_alt.is_dir() {
         return Ok((android_lib_dir_alt, archive_stem.to_string()));
     }
     // Reuse an already extracted xcframework: re-extracting to add this target's lib dir would
     // delete the other target's (device `lib/` vs simulator `lib-sim/`), breaking its build.
-    if target_os == "ios" {
+    if cache_ok && target_os == "ios" {
         if let Some(ios_lib) = setup_ios_lib_dir(&extracted_dir)? {
             return Ok((ios_lib, archive_stem.to_string()));
         }
@@ -209,6 +220,12 @@ fn download_prebuilt_libs(
     fs::create_dir_all(&cache_root)?;
 
     let archive_path = cache_root.join(&archive_name);
+    if let Some(hash) = &expected {
+        // A cached archive that no longer matches is fetched again.
+        if archive_path.is_file() && sha256_of(&archive_path)? != *hash {
+            fs::remove_file(&archive_path)?;
+        }
+    }
     if !archive_path.is_file() {
         if let Some(local_archive_dir) = env::var_os("SHERPA_ONNX_ARCHIVE_DIR") {
             let local_archive_path = PathBuf::from(local_archive_dir).join(&archive_name);
@@ -233,6 +250,16 @@ fn download_prebuilt_libs(
                 .map_err(|e| format!("Failed to download sherpa-onnx archive from {url}: {e}"))?;
             let mut reader = response.into_reader();
             write_reader_atomically(&mut reader, &archive_path)?;
+        }
+        if let Some(hash) = &expected {
+            let got = sha256_of(&archive_path)?;
+            if got != *hash {
+                let _ = fs::remove_file(&archive_path);
+                return Err(format!(
+                    "{archive_name} does not match SHERPA_ONNX_SHA256SUMS: expected {hash}, got {got}"
+                )
+                .into());
+            }
         }
     }
 
@@ -268,6 +295,10 @@ fn download_prebuilt_libs(
             archive_path.display()
         )
         .into());
+    }
+    if let Some(hash) = &expected {
+        fs::create_dir_all(&extracted_dir)?;
+        fs::write(&marker, hash)?;
     }
 
     if !lib_dir.is_dir() {
@@ -315,6 +346,41 @@ fn download_prebuilt_libs(
     eprintln!("Downloaded sherpa-onnx libs to {}", extracted_dir.display());
 
     Ok((lib_dir, archive_stem.to_string()))
+}
+
+/// The SHA-256 that SHERPA_ONNX_SHA256SUMS pins for `archive_name`, if it is set.
+///
+/// It names a file in `sha256sum`'s format, such as a release's SHA256SUMS kept
+/// in the depending project, so the libraries it links are the ones it checked
+/// in, whatever the release serves later. An archive the file does not list is
+/// an error, not a pass.
+fn expected_sha256(archive_name: &str) -> Result<Option<String>, DynError> {
+    let Some(path) = env::var_os("SHERPA_ONNX_SHA256SUMS") else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(path);
+    println!("cargo:rerun-if-changed={}", path.display());
+    let sums = fs::read_to_string(&path)
+        .map_err(|e| format!("Cannot read SHERPA_ONNX_SHA256SUMS {}: {e}", path.display()))?;
+    for line in sums.lines() {
+        let mut parts = line.split_whitespace();
+        if let (Some(hash), Some(name)) = (parts.next(), parts.next()) {
+            if name.trim_start_matches('*') == archive_name {
+                return Ok(Some(hash.to_ascii_lowercase()));
+            }
+        }
+    }
+    Err(format!("SHERPA_ONNX_SHA256SUMS {} does not list {archive_name}", path.display()).into())
+}
+
+fn sha256_of(path: &Path) -> Result<String, DynError> {
+    let mut hasher = Sha256::new();
+    io::copy(&mut File::open(path)?, &mut hasher)?;
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
 }
 
 
