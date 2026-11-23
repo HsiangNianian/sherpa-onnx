@@ -1,0 +1,45 @@
+name: alcyo-ios
+
+# The iOS xcframework the Rust crate links on the iPad, built from an alcyo-* tag and added to that tag's
+# release, with its checksum appended to the release's SHA256SUMS. sherpa-onnx-sys downloads it from there
+# through SHERPA_ONNX_RELEASE_URL, like the desktop libraries; the official xcframework would lack this
+# fork's streaming diarization API.
+#
+#   gh workflow run alcyo-ios.yaml -R HsiangNianian/sherpa-onnx -f tag=alcyo-2.0.1-3
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The alcyo-* tag to build, whose release gets the xcframework
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  xcframework:
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Build
+        run: |
+          command -v wget >/dev/null || brew install wget
+          ./build-ios-shared-sherpa-with-static-onnxruntime.sh
+      - name: Add to the release
+        run: |
+          cd build-ios-shared-sherpa-with-static-onnxruntime
+          zip=$(ls sherpa-onnx-v*-ios-shared-onnxruntime-static.xcframework.zip)
+          ls -lh "$zip"
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern SHA256SUMS --output SHA256SUMS
+          grep -v "  $zip\$" SHA256SUMS > SHA256SUMS.new || true
+          shasum -a 256 "$zip" >> SHA256SUMS.new
+          mv SHA256SUMS.new SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" "$zip" SHA256SUMS --clobber
